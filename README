@@ -132,6 +132,41 @@ Combines Go-Explore's archive-based exploration with **Advantage Actor-Critic (A
 
 ---
 
+### 4. Go-Explore + ACER (`ACER_Go_Explore.ipynb`)
+
+Combines Go-Explore's archive-based exploration with **Actor-Critic with Experience Replay (ACER)**, an off-policy actor-critic algorithm that uses importance sampling to reuse past experience while correcting for the distribution mismatch between the behaviour and current policy.
+
+**Architecture:**
+- Single environment with episodic rollouts of up to 100 steps
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Shared convolutional backbone with separate policy head (π) and Q-value head (Q) — state value is recovered as V(s) = Σ_a π(a|s) Q(s,a)
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- `next_states` are stored explicitly in each trajectory tuple so the Bellman target is computed from actual successor states — the original `v.roll(-1)` approach circularly shifted the value tensor, making the last state's next-value wrap around to the first state's value and corrupting all targets
+- Terminal transitions are masked with `(1 - done)` in the Bellman target so the critic does not bootstrap beyond the end of an episode
+- Random-action steps use a uniform `old_pi` so their importance sampling ratio `ρ ≈ 1`; the truncation constant `c` then correctly down-weights them rather than treating them as on-policy transitions
+- Life-loss is detected before storing the done flag so the Bellman target is zeroed at the actual terminal step, not one step later
+- Score and trajectory are explicitly reset on death so archive updates after a life-loss don't carry stale cumulative values from the previous life
+
+---
+
+## Hyperparameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before ACER training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `c` | 10.0 | IS ratio truncation constant |
+| `entropy_coef` | 0.05 | Entropy bonus coefficient |
+| `grad_clip` | 0.5 | Gradient norm clipping |
+
+---
+
 ## What Makes Hard-Exploration Games Difficult
 
 Standard RL algorithms (DQN, PPO, A3C) fail on Montezuma's Revenge because:
