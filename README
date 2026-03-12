@@ -19,7 +19,7 @@ The key insight is the separation of *finding* good trajectories (exploration) f
 
 ## Experiments
 
-### 1. Go-Explore + A3C (`go_explore_a3c.py`)
+### 1. Go-Explore + A3C (`A3C_Go_Explore.ipynb`)
 
 Combines Go-Explore's archive-based exploration with **Asynchronous Advantage Actor-Critic (A3C)** running across multiple parallel environments.
 
@@ -53,6 +53,47 @@ Combines Go-Explore's archive-based exploration with **Asynchronous Advantage Ac
 | `lr` | 1e-4 | Adam learning rate (actor and critic) |
 | `entropy_coef` | 0.05 | Entropy bonus coefficient |
 | `grad_clip` | 0.5 | Gradient norm clipping |
+
+---
+
+### 2. Go-Explore + DQN (`DQN_Go_Explore.ipynb`)
+
+Combines Go-Explore's archive-based exploration with **Deep Q-Network (DQN)** using a replay buffer and a separate target network for stable Q-value estimation.
+
+**Architecture:**
+- Single environment with an explicit replay buffer (capacity 50,000)
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Convolutional policy network and target network (identical architecture, separate weights)
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Life-loss detection happens before `memory.push()` so the `done` flag stored in the replay buffer correctly reflects episode termination
+- A separate `EXPLORE_EPSILON` governs Go-Explore's random action rate, decoupled from the DQN's own epsilon schedule — the two serve different purposes and should not be conflated
+- Double DQN is used for action evaluation: the policy network selects the next action, the target network evaluates it, preventing the Q-value overestimation of vanilla DQN's `max()` operator
+- Soft target updates (`τ=0.005`) blend policy and target weights each step rather than hard-copying every N steps, avoiding abrupt Q-value discontinuities
+- Score and trajectory are explicitly reset on termination so the archive update following a death does not carry over stale cumulative values from the previous life
+- DQN training is deferred until after `WARMUP_ITERS` Go-Explore iterations so the replay buffer contains diverse transitions before the first gradient step
+
+---
+
+## Hyperparameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before DQN training begins |
+| `STEPS_PER_ITER` | 100 | Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `replay_buffer_capacity` | 50,000 | Maximum transitions stored |
+| `batch_size` | 32 | Transitions sampled per gradient step |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `grad_clip` | 10.0 | Gradient norm clipping |
+| `tau` | 0.005 | Soft target network update rate |
+| `warmup_steps` | 1,000 | Minimum buffer size before any gradient steps |
+| `epsilon_start` | 1.0 | Initial DQN epsilon |
+| `epsilon_end` | 0.05 | Final DQN epsilon |
+| `epsilon_decay_steps` | 50,000 | Steps over which DQN epsilon is annealed |
 
 ---
 
