@@ -1,0 +1,78 @@
+# Go-Explore + RL Experiments
+
+A collection of experiments combining **Go-Explore** — Uber AI's archive-based exploration strategy — with deep reinforcement learning algorithms, tested on hard-exploration Atari environments, primarily **Montezuma's Revenge**.
+
+---
+
+## What is Go-Explore?
+
+Go-Explore is a two-phase exploration strategy designed to solve games where random exploration almost never finds a reward. Classic RL agents fail on Montezuma's Revenge because the first reward (picking up a key) requires executing ~80 precise actions in sequence — the probability of stumbling onto this randomly is vanishingly small.
+
+Go-Explore sidesteps this by:
+
+1. **Explore** — Maintain an archive of interesting states visited so far. At the start of each episode, *restore* the game to a promising archived state, then explore randomly from there. Any newly discovered states are added to the archive.
+2. **Robustify** — Once the archive contains a path to a high-reward state, train a policy to reach and reproduce that path without relying on state restoration.
+
+The key insight is the separation of *finding* good trajectories (exploration) from *learning* to reproduce them (policy training).
+
+---
+
+## Experiments
+
+### 1. Go-Explore + A3C (`go_explore_a3c.py`)
+
+Combines Go-Explore's archive-based exploration with **Asynchronous Advantage Actor-Critic (A3C)** running across multiple parallel environments.
+
+**Architecture:**
+- `SyncVectorEnv` with 4 parallel environments, each restored to a different archive cell per iteration
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Convolutional Actor and Critic networks (shared architecture, separate weights)
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- The epsilon schedule (1.0 → 0.05) controls the transition from random exploration to policy-driven play; the decision is made once per rollout so gradients are consistent within a batch
+- Actor loss is computed only on policy steps; random-action steps contribute to critic training only, since training the actor to imitate random behaviour is counterproductive
+- Returns are normalised with a Welford running normaliser so the critic sees a stable target scale regardless of which archive cell (reward 0 to 400+) was restored
+- Huber loss replaces MSE for the critic, reducing sensitivity to the large return variance inherent in Go-Explore's restoration strategy
+- Per-environment life tracking is maintained manually — `infos['lives']` from `SyncVectorEnv` reflects the post-reset value after auto-reset, not the terminal value
+
+---
+
+## Hyperparameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `NUM_ENVS` | 4 | Parallel environments |
+| `STEPS_PER_UPDATE` | 128 | Rollout length per A3C update |
+| `WARMUP_ITERS` | 100 | Pure random exploration before policy updates begin |
+| `EPSILON_START` | 1.0 | Initial random action probability |
+| `EPSILON_END` | 0.05 | Final random action probability |
+| `EPSILON_DECAY` | 0.995 | Per-iteration decay after warmup |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate (actor and critic) |
+| `entropy_coef` | 0.05 | Entropy bonus coefficient |
+| `grad_clip` | 0.5 | Gradient norm clipping |
+
+---
+
+## What Makes Hard-Exploration Games Difficult
+
+Standard RL algorithms (DQN, PPO, A3C) fail on Montezuma's Revenge because:
+
+- The reward is extremely sparse — a random agent will almost never pick up the key
+- The game requires long sequences of deliberate actions with no intermediate feedback
+- Dying resets progress entirely, and the agent has no mechanism to remember what worked
+
+Go-Explore solves this by never forgetting. Once the archive contains a state near the key, every future iteration can restore directly to that state and explore forward from there.
+
+---
+
+## References
+
+- [Go-Explore: A New Approach for Hard-Exploration Problems](https://arxiv.org/abs/1901.10995) — Ecoffet et al., 2019
+- [Asynchronous Methods for Deep Reinforcement Learning](https://arxiv.org/abs/1602.01783) — Mnih et al., 2016
+- [Arcade Learning Environment](https://github.com/mgbellemare/Arcade-Learning-Environment) — Bellemare et al.
+
+## Credit
+- [Ryanrudes: Minimal Go-Explore](https://github.com/ryanrudes/minimal_goexplore/tree/master) - Thank you for writing this code, it has been essential for this project.
