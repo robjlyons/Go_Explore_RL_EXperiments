@@ -97,6 +97,41 @@ Combines Go-Explore's archive-based exploration with **Deep Q-Network (DQN)** us
 
 ---
 
+### 3. Go-Explore + A2C (`A2C_Go_Explore.ipynb`)
+
+Combines Go-Explore's archive-based exploration with **Advantage Actor-Critic (A2C)** running on a single environment, updating synchronously after each rollout.
+
+**Architecture:**
+- Single environment with episodic rollouts of up to 100 steps
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Separate convolutional Actor and Critic networks with independent optimisers
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Actor loss is computed only on policy steps; random-action steps are flagged via `policy_mask` and contribute to critic training only — no network forward pass is performed for random actions during rollout collection
+- A minimum batch size of 2 is enforced before any update — a single-step episode (dying immediately) makes `advantages.std()` undefined, producing `nan` that permanently corrupts all network weights through backprop
+- Life-loss is detected before storing the done flag so the returns computation correctly resets at the actual terminal transition, not one step later
+- Advantage normalisation is applied only over the policy-masked subset, guarding against the same `std()` instability if the policy subset is also too small
+- Huber loss replaces MSE for the critic, reducing sensitivity to the large return variance from restoring cells with different cumulative rewards
+- Entropy bonus keeps the policy from collapsing to near-deterministic on a sparse-reward game where early rollouts carry almost no reward signal
+
+---
+
+## Hyperparameters
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before A2C training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate (actor and critic) |
+| `entropy_coef` | 0.05 | Entropy bonus coefficient |
+| `grad_clip` | 0.5 | Gradient norm clipping |
+
+---
+
 ## What Makes Hard-Exploration Games Difficult
 
 Standard RL algorithms (DQN, PPO, A3C) fail on Montezuma's Revenge because:
