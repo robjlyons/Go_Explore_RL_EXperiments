@@ -150,6 +150,8 @@ Combines Go-Explore's archive-based exploration with **Actor-Critic with Experie
 - Life-loss is detected before storing the done flag so the Bellman target is zeroed at the actual terminal step, not one step later
 - Score and trajectory are explicitly reset on death so archive updates after a life-loss don't carry stale cumulative values from the previous life
 
+![Go-Explore + ACER Results](https://github.com/robjlyons/Go_Explore_RL_EXperiments/blob/main/ACER_Go_Explore_Results.png "Go-Explore + ACER Results")
+
 ---
 
 ## Hyperparameters
