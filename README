@@ -165,6 +165,79 @@ Combines Go-Explore's archive-based exploration with **Actor-Critic with Experie
 | `entropy_coef` | 0.05 | Entropy bonus coefficient |
 | `grad_clip` | 0.5 | Gradient norm clipping |
 
+### 5. Go-Explore + Dueling DQN (`Dueling_DQN_Go_Explore.ipynb`)
+
+Combines Go-Explore's archive-based exploration with **Dueling DQN**, an architecture that separates Q-value estimation into independent value and advantage streams, improving learning stability in states where action choice has little effect on outcome.
+
+**Architecture:**
+- Single environment with a replay buffer (capacity 50,000)
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Shared convolutional backbone feeding two independent heads: a value stream `V(s)` and an advantage stream `A(s,a)`, recombined as `Q(s,a) = V(s) + A(s,a) - mean(A(s,a))`
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- The mean subtraction in the dueling combination is essential — without it `V` and `A` can shift by an arbitrary constant while producing the same `Q`, making the decomposition non-unique and training unstable; subtracting the mean forces the advantage to be zero-centred, pinning `V` to the true state value
+- Double DQN action evaluation is preserved: the policy network selects the next action, the target network evaluates it — the dueling decomposition is entirely internal to `forward()` so no changes to the update logic are required
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Lives are read via `ale.lives()` directly rather than `info['lives']` — the wrapper's counter is stale after `ale.restoreState()` since it only updates through `env.reset()`, making any threshold check on `info['lives']` unreliable
+- Soft target updates (`τ=0.005`) blend policy and target weights each step rather than hard-copying every N steps, avoiding abrupt Q-value discontinuities
+
+**Hyperparameters:**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before DQN training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `tau` | 0.005 | Soft target network update rate |
+| `grad_clip` | 10.0 | Gradient norm clipping |
+| `warmup_steps` | 1,000 | Minimum buffer size before any gradient steps |
+| `epsilon_start` | 1.0 | Initial DQN epsilon |
+| `epsilon_end` | 0.05 | Final DQN epsilon |
+| `epsilon_decay_steps` | 50,000 | Steps over which DQN epsilon is annealed |
+
+---
+
+### 6. Go-Explore + Dueling DQN + PER (`Dueling_DQN_PER_Go_Explore.ipynb`)
+
+Extends the Dueling DQN experiment with **Prioritised Experience Replay (PER)**, which replaces uniform random sampling from the replay buffer with priority-weighted sampling based on TD error magnitude — ensuring transitions the network currently finds surprising are revisited more often.
+
+**Architecture:**
+- Single environment with a sum-tree backed prioritised replay buffer (capacity 50,000)
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Dueling DQN network (shared convolutional backbone, separate value and advantage streams)
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- The replay buffer is backed by a **sum-tree**: a binary tree where leaves store per-transition priorities and internal nodes store subtree sums, giving O(log n) priority updates and O(log n) weighted sampling — a naive sorted list would require O(n) for both operations
+- **Stratified sampling** divides total priority into `batch_size` equal segments and draws one transition from each, guaranteeing the batch covers the full priority range rather than clustering around a few high-priority transitions
+- **Importance sampling (IS) weights** correct for the gradient bias introduced by non-uniform sampling — high-priority transitions are down-weighted by `(1/N * 1/P(i))^β` before the loss is averaged, so their oversampling does not dominate the gradient
+- `β` anneals from 0.4 → 1.0 over training: partial correction is applied early on when large gradient updates are less harmful and the value function is still noisy, strengthening to full correction as training matures
+- New transitions receive the current maximum priority so they are sampled at least once before their true TD error is known
+- Huber loss is computed with `reduction='none'` to produce per-transition losses that are each scaled by their individual IS weight before averaging
+
+**Hyperparameters:**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before DQN training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `tau` | 0.005 | Soft target network update rate |
+| `grad_clip` | 10.0 | Gradient norm clipping |
+| `warmup_steps` | 1,000 | Minimum buffer size before any gradient steps |
+| `epsilon_start` | 1.0 | Initial DQN epsilon |
+| `epsilon_end` | 0.05 | Final DQN epsilon |
+| `epsilon_decay_steps` | 50,000 | Steps over which DQN epsilon is annealed |
+| `per_alpha` | 0.6 | Prioritisation strength — 0 is uniform, 1 is full TD-error priority |
+| `per_beta_start` | 0.4 | Initial IS correction strength |
+| `per_beta_end` | 1.0 | Final IS correction strength |
+| `per_beta_steps` | 100,000 | Steps over which β is annealed to full correction |
+
 ---
 
 ## What Makes Hard-Exploration Games Difficult
