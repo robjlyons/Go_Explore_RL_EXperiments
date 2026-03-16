@@ -240,6 +240,54 @@ Extends the Dueling DQN experiment with **Prioritised Experience Replay (PER)**,
 
 ---
 
+### 7. Go-Explore + Distributional Dueling DQN + PER (`Distributional_DQN_Go_Explore.ipynb`)
+
+Extends the Dueling DQN + PER experiment with **Distributional RL (C51)**, which models the full probability distribution over returns rather than just their expected value. Instead of outputting a scalar `Q(s,a)`, the network outputs a probability distribution over 51 fixed atoms spanning `[V_min, V_max]`. This is three of the six [Rainbow](https://arxiv.org/abs/1710.02298) components applied together.
+
+**Architecture:**
+- Single environment with a sum-tree backed prioritised replay buffer (capacity 50,000)
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Shared convolutional backbone feeding two independent streams — a value stream `V(s,z)` and an advantage stream `A(s,a,z)` — each operating over `n_atoms=51` atoms rather than scalars
+- Output: `(B, n_actions, n_atoms)` probability distributions, one per action
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- The dueling combination is applied **per-atom in logit space before softmax**: `logits(s,a,z) = V(s,z) + A(s,a,z) - mean_a[A(s,a,z)]`, then `softmax` over the atom dimension — applying softmax to each stream independently before combining would produce invalid probability distributions
+- The **categorical projection** (`project_distribution`) implements the Bellman update for distributions: for each atom `z_j`, the target `Tz_j = clip(r + γ(1-done)*z_j, V_min, V_max)` is computed, and its probability mass is split between the two nearest atoms proportionally via `scatter_add_`
+- **Cross-entropy loss** replaces Huber loss: `L = -sum_z m(z) * log p(s,a,z)` where `m` is the projected target distribution — this is the natural distance measure between two discrete distributions
+- The per-transition cross-entropy value replaces the scalar TD error for PER priority updates, serving the same role of measuring how surprising each transition currently is to the network
+- `V_min=0, V_max=500` is set to match Montezuma's Revenge reward structure — rewards are non-negative multiples of 100, and atoms outside this range are clipped and wasted; adjust these bounds for different games or longer episodes
+- The `support` tensor is registered as a `nn.Buffer` so `.to(device)` moves it automatically without manual device tracking
+- Action selection uses `q_values()` which computes expected Q-values `Q(s,a) = sum_z z * p(s,a,z)` — the full distributions are used only during training, not during the greedy action selection step
+- Double DQN is preserved: the policy network selects the next action via expected Q-values, the target network provides the distribution for evaluation
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Lives are read via `ale.lives()` directly rather than `info['lives']` — the wrapper's counter is stale after `ale.restoreState()` since it only updates through `env.reset()`
+
+**Hyperparameters:**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before DQN training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore steps |
+| `n_atoms` | 51 | Number of atoms in the return distribution support |
+| `v_min` | 0.0 | Minimum return in support — non-negative for Montezuma |
+| `v_max` | 500.0 | Maximum return in support — covers one restored episode |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `tau` | 0.005 | Soft target network update rate |
+| `grad_clip` | 10.0 | Gradient norm clipping |
+| `warmup_steps` | 1,000 | Minimum buffer size before any gradient steps |
+| `epsilon_start` | 1.0 | Initial epsilon |
+| `epsilon_end` | 0.05 | Final epsilon |
+| `epsilon_decay_steps` | 50,000 | Steps over which epsilon is annealed |
+| `per_alpha` | 0.6 | Prioritisation strength — 0 is uniform, 1 is full TD-error priority |
+| `per_beta_start` | 0.4 | Initial IS correction strength |
+| `per_beta_end` | 1.0 | Final IS correction strength |
+| `per_beta_steps` | 100,000 | Steps over which β is annealed to full correction |
+
+---
+
 ## What Makes Hard-Exploration Games Difficult
 
 Standard RL algorithms (DQN, PPO, A3C) fail on Montezuma's Revenge because:
