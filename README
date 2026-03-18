@@ -288,6 +288,91 @@ Extends the Dueling DQN + PER experiment with **Distributional RL (C51)**, which
 
 ---
 
+### 8. Go-Explore + Rainbow DQN (`Rainbow_DQN_Go_Explore.ipynb`)
+ 
+Combines Go-Explore's archive-based exploration with **Rainbow DQN**, which integrates all six improvements over vanilla DQN identified in the [Rainbow paper](https://arxiv.org/abs/1710.02298): Double DQN, Dueling networks, Prioritised Experience Replay, Distributional RL (C51), Noisy Networks, and N-step returns. The previous experiments applied three of these; this experiment adds the remaining two.
+ 
+**Architecture:**
+- Single environment with a sum-tree backed prioritised replay buffer (capacity 50,000)
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Shared convolutional backbone feeding `NoisyLinear` value and advantage streams, each outputting distributions over 51 atoms — `(B, n_actions, n_atoms)`
+- N-step return buffer sitting between the environment and the PER buffer, compressing n consecutive transitions into one
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+ 
+**Key design decisions:**
+- **Noisy Networks** replace `nn.Linear` in both heads with `NoisyLinear` layers that have learnable per-weight noise parameters `σ`, replacing the epsilon-greedy schedule entirely after warmup — exploration becomes state-dependent and refined during training rather than applying uniform noise to all actions in all states
+- Factorised Gaussian noise reduces random draws from O(p×q) to O(p+q) per layer by sampling p input and q output values and taking their outer product via `f(x) = sgn(x)√|x|`; `sigma_init=0.5` follows the Rainbow paper
+- `resample_noise()` is called exactly **once** before the gradient-tracked forward pass in `optimize_model()` — a second call inside `torch.no_grad()` would modify `weight_eps` inplace after the autograd graph had recorded it, raising `RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation`
+- **N-step returns** compress `r_t + γr_{t+1} + ... + γ^(n-1)r_{t+n-1}` into a single replay buffer entry; the Bellman target uses `γ^n` rather than `γ` since the bootstrapped next state is n steps ahead — `n=3` follows the Rainbow paper
+- `flush_nstep()` drains any partial n-step window at episode end so no transitions are lost when the episode terminates before n steps accumulate
+- The noisy backbone is kept in `train()` mode during rollout collection so noise is active; evaluation uses `eval()` mode which falls back to mean weights only
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Lives are read via `ale.lives()` directly rather than `info['lives']` — the wrapper's counter is stale after `ale.restoreState()`
+ 
+**Hyperparameters:**
+ 
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before Rainbow training begins |
+| `STEPS_PER_ITER` | 100 | Maximum Go-Explore steps collected per iteration |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random action during Go-Explore warmup only |
+| `n_atoms` | 51 | Number of atoms in the return distribution support |
+| `v_min` | 0.0 | Minimum return — non-negative for Montezuma's Revenge |
+| `v_max` | 500.0 | Maximum return — covers one restored episode with margin |
+| `n_step` | 3 | N-step return window |
+| `sigma_init` | 0.5 | Initial noise scale for NoisyLinear layers |
+| `gamma` | 0.99 | Discount factor |
+| `lr` | 1e-4 | Adam learning rate |
+| `tau` | 0.005 | Soft target network update rate |
+| `grad_clip` | 10.0 | Gradient norm clipping |
+| `warmup_steps` | 1,000 | Minimum buffer size before any gradient steps |
+| `per_alpha` | 0.6 | Prioritisation strength |
+| `per_beta_start` | 0.4 | Initial IS correction strength |
+| `per_beta_end` | 1.0 | Final IS correction strength |
+| `per_beta_steps` | 100,000 | Steps over which β is annealed to full correction |
+ 
+---
+ 
+### 9. Go-Explore + PPO (`PPO_Go_Explore.ipynb`)
+ 
+Combines Go-Explore's archive-based exploration with **Proximal Policy Optimisation (PPO)**, an on-policy algorithm that collects fixed-length rollouts and updates the policy multiple times per rollout using a clipped surrogate objective to prevent destructively large updates.
+ 
+**Architecture:**
+- Single environment collecting fixed-length rollouts of `STEPS_PER_ITER=512` steps
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Shared convolutional backbone with a shared 512-unit FC layer, splitting into a policy head and a value head — sharing features halves the parameter count and encourages representations useful for both
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+ 
+**Key design decisions:**
+- PPO collects **fixed-length rollouts across multiple episodes** rather than one episode per update — when an episode ends mid-rollout the environment resets inline and collection continues immediately; using `break` on episode end (as with A2C/DQN/ACER) averaged only ~9 steps per iteration with an untrained policy, starving the archive of new cells entirely
+- The **clipped surrogate objective** `L = E[min(r·A, clip(r, 1-ε, 1+ε)·A)]` where `r = π_new/π_old` prevents the policy moving too far from the behaviour policy in one update; `clip_eps=0.1` is slightly tighter than the paper's 0.2, appropriate for a sparse-reward game
+- **GAE (Generalised Advantage Estimation)** with `λ=0.95` blends TD and Monte Carlo advantage estimates — `λ=0` is pure TD (low variance, high bias), `λ=1` is pure Monte Carlo (high variance, low bias); 0.95 gives near-Monte-Carlo quality while remaining tractable
+- The final state's value is bootstrapped via `get_value()` at the end of each rollout to correctly initialise the GAE recursion for rollouts that ended mid-episode rather than at a natural terminal state
+- `ppo_epochs=4` passes over each rollout before discarding it — this is the key efficiency gain over A2C; the clip ratio keeps multiple passes valid by bounding how far the policy can move from the behaviour policy that collected the data
+- Each epoch shuffles the rollout indices before slicing into mini-batches so mini-batch composition varies between passes, reducing correlation
+- Random rollouts skip the PPO update entirely — log-probs stored for random actions are placeholder `0.0` values that would produce meaningless importance ratios in the clipped objective
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Lives are read via `ale.lives()` directly rather than `info['lives']` — the wrapper's counter is stale after `ale.restoreState()`
+ 
+**Hyperparameters:**
+ 
+| Parameter | Value | Notes |
+|---|---|---|
+| `WARMUP_ITERS` | 50 | Pure random Go-Explore before PPO training begins |
+| `STEPS_PER_ITER` | 512 | Fixed rollout length — must not break early on episode end |
+| `EXPLORE_EPSILON` | 0.5 | Probability of random rollout during Go-Explore steps |
+| `gamma` | 0.99 | Discount factor |
+| `gae_lambda` | 0.95 | GAE λ — blend between TD (0) and Monte Carlo (1) |
+| `clip_eps` | 0.1 | PPO clip range |
+| `ppo_epochs` | 4 | Update passes over each rollout before discarding |
+| `mini_batches` | 4 | Number of mini-batches per epoch |
+| `entropy_coef` | 0.01 | Entropy bonus to prevent premature policy collapse |
+| `value_coef` | 0.5 | Critic loss weight relative to actor loss |
+| `lr` | 2.5e-4 | Adam learning rate |
+| `grad_clip` | 0.5 | Gradient norm clipping |
+ 
+---
+
 ## What Makes Hard-Exploration Games Difficult
 
 Standard RL algorithms (DQN, PPO, A3C) fail on Montezuma's Revenge because:
