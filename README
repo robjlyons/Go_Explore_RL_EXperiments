@@ -370,7 +370,41 @@ Combines Go-Explore's archive-based exploration with **Proximal Policy Optimisat
 | `value_coef` | 0.5 | Critic loss weight relative to actor loss |
 | `lr` | 2.5e-4 | Adam learning rate |
 | `grad_clip` | 0.5 | Gradient norm clipping |
- 
+
+---
+
+### 10. Go-Explore + Vanilla Genetic Algorithm (`GA_Go_Explore.ipynb`)
+
+Combines Go-Explore's archive-based exploration with a **Vanilla Genetic Algorithm (GA)**, a population-based optimisation method that evolves a set of independent policy networks through selection and mutation — no backpropagation, no value function, no replay buffer. Based on the GA baseline from [Salimans et al., 2017](https://arxiv.org/abs/1712.06567).
+
+**Architecture:**
+- Single environment evaluating `POP_SIZE=20` independent policy networks per generation
+- Pixel-based cell representation: frames downsampled to 11×8 grayscale, quantised to 8 levels
+- Population of N independent networks — unlike ES which maintains a single mean `θ`, each GA individual is a fully independent parameter vector that competes, survives, or is discarded each generation
+- Deterministic greedy policy — stochasticity comes from mutation noise applied to surviving parameters, not action sampling
+- Score-weighted archive sampling — cells visited less often and reached with higher reward are preferred
+
+**Key design decisions:**
+- **Truncation selection** ranks individuals by fitness, keeps the top `ELITE_FRAC=0.2` fraction (4 out of 20), and discards the rest — the paper found truncation outperforms fitness-proportionate selection for most RL tasks because it aggressively focuses reproduction on the highest performers
+- **Elitism** carries the single best individual unchanged into the next generation; without this, a lucky individual that found a reward could be mutated away before being properly exploited in subsequent generations
+- **Mutation** fills the remaining `POP_SIZE - 1` slots by sampling elites uniformly with replacement and adding isotropic Gaussian noise `N(0, σ²)` to every parameter; `σ=0.01` is within the 0.005–0.02 range recommended in the paper — too large produces offspring with no resemblance to parents, too small makes evolution slower than gradient descent
+- Each individual is restored to a **different** archive cell so the population collectively covers the archive frontier rather than all competing from the same restored state; this is the key Go-Explore integration point — the population's diversity maps directly onto archive coverage
+- Fitness is defined as reward gained *beyond* the restored cell's baseline (`score - start_score`) so individuals restored from high-reward cells are comparable to those restored from low-reward cells — absolute reward would make deep-archive individuals always dominate selection regardless of what they actually discovered
+- The archive is seeded with a 500-step random episode before the GA begins; without this the archive is too sparse for meaningful score-weighted cell selection in generation 1
+- The difference between GA and ES: GA maintains N independent networks and selects survivors — the population has persistent identity across generations. ES maintains **one** mean vector and uses N evaluations purely as a gradient estimator — there are no survivors, only a single parameter update per generation
+- State restoration uses `ale.restoreState()` + `ale.getScreenRGB()` directly, never `env.reset()`, which would wipe the restored state
+- Lives are read via `ale.lives()` directly rather than `info['lives']` — the wrapper's counter is stale after `ale.restoreState()`
+
+**Hyperparameters:**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `POP_SIZE` | 20 | Number of individuals per generation |
+| `ELITE_FRAC` | 0.2 | Top fraction kept as parents — 4 elites for `POP_SIZE=20` |
+| `SIGMA` | 0.01 | Mutation noise std — Salimans et al. use 0.005–0.02 |
+| `EVAL_STEPS` | 200 | Max environment steps per individual evaluation |
+| `WARMUP_GENS` | 10 | Generations of random archive seeding before GA selection begins |
+
 ---
 
 ## What Makes Hard-Exploration Games Difficult
